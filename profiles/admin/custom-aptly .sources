@@ -1,0 +1,6 @@
+Types: deb
+URIs: http://192.168.0.177/ubuntu
+Suites: plucky
+Components: main admin common
+Signed-By: /etc/apt/trusted.gpg.d/aptly.gpg
+Trusted: yes
