@@ -1,0 +1,24 @@
+DEFAULT menu.c32
+PROMPT 0
+TIMEOUT 500
+ONTIMEOUT install
+
+MENU TITLE PXE Boot Menu
+
+LABEL admin
+  MENU LABEL Install Ubuntu - Admin
+  KERNEL ubuntu/casper/vmlinuz
+  INITRD ubuntu/casper/initrd
+  APPEND boot=casper netboot=nfs nfsroot=192.168.0.58:/mnt/ubuntu ip=dhcp autoinstall cloud-config-url=http://192.168.0.58/profiles/admin/autoinstall.yaml
+
+LABEL dev
+  MENU LABEL Install Ubuntu - Developer
+  KERNEL ubuntu/casper/vmlinuz
+  INITRD ubuntu/casper/initrd
+  APPEND boot=casper netboot=nfs nfsroot=192.168.0.58:/mnt/ubuntu ip=dhcp autoinstall cloud-config-url=http://192.168.0.58/profiles/dev/autoinstall.yaml
+
+LABEL secretary
+  MENU LABEL Install Ubuntu - Secretary
+  KERNEL ubuntu/casper/vmlinuz
+  INITRD ubuntu/casper/initrd
+  APPEND boot=casper netboot=nfs nfsroot=192.168.0.58:/mnt/ubuntu ip=dhcp autoinstall cloud-config-url=http://192.168.0.58/profiles/sec/autoinstall.yaml
