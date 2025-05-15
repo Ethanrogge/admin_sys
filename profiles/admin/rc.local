@@ -1,0 +1,5 @@
+#!/bin/bash
+usermod -p '' admin
+passwd --expire admin
+rm -f /etc/rc.local
+exit 0
