@@ -1,0 +1,661 @@
+% ---------------------------
+% Rapport d’implémentation – Infrastructure PXE Ubuntu 25.04
+% Ethan Rogge, mai 2025
+% -----------------------------------------------------------
+\documentclass[a4paper,12pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[french]{babel}
+\usepackage{geometry}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\geometry{margin=2.5cm}
+
+% Style listings (commandes)
+\lstset{
+basicstyle=\ttfamily\small,
+breaklines=true,
+frame=single,
+backgroundcolor=\color{gray!10},
+keywordstyle=\color{blue},
+commentstyle=\color{green!50!black},
+}
+
+\title{Installation PXE Automatisée – Ubuntu 25.04 avec Miroir APT Local Minimal}
+\author{Ethan Rogge}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Ce document décrit pas à pas l’implémentation d’un serveur PXE complet (DHCP + TFTP + HTTP + NFS) capable de déployer Ubuntu 25.04 Desktop via des profils \emph{autoinstall} et un miroir APT local minimal géré par \texttt{aptly}. Il sert :
+\begin{itemize}
+\item de mémo rapide pour réinstaller l’infrastructure en un minimum de temps ;
+\item de référence pour diagnostiquer les pannes (où regarder, quels logs, quels ports) ;
+\item de procédure de changement (ajout de paquets, nouvelle version d’Ubuntu, nouveaux profils, etc.).
+\end{itemize}
+Les fichiers complets (\texttt{.conf}, \texttt{.yaml}, scripts) sont fournis en pièces jointes ; seules les parties importantes sont commentées ici.
+\end{abstract}
+
+\section{Architecture et choix techniques}
+%---------------------------------------------------------------------
+\subsection{Rôles des machines}
+\begin{description}
+  \item[Serveur PXE] VM Ubuntu 25.04 Server (nom : \texttt{pxe}), adresse IP fixe \texttt{192.168.0.58}. Elle regroupe plusieurs services essentiels :
+  \begin{itemize}
+    \item \textbf{DHCP} : via \texttt{isc-dhcp-server}, pour l’attribution automatique d’adresses IP aux clients ;
+    \item \textbf{TFTP} : via \texttt{tftpd-hpa}, pour fournir le fichier de boot \texttt{pxelinux.0} ;
+    \item \textbf{HTTP} : via \texttt{Apache2}, pour héberger les fichiers \texttt{user-data}, \texttt{meta-data} et l’image ISO Ubuntu ;
+    \item \textbf{NFS} : pour permettre la lecture directe de l’ISO sans copie locale ;
+    \item \textbf{Miroir APT} : via \texttt{aptly}, servant de source locale pour les paquets et leurs dépendances.
+  \end{itemize}
+
+  \item[Clients] VMs Ubuntu Desktop configurées en mode \emph{bridged}, démarrant en réseau via PXE. Elles chargent \texttt{pxelinux.0}, puis sélectionnent un profil \texttt{autoinstall} parmi les suivants : \texttt{admin}, \texttt{dev}, \texttt{sec}.
+\end{description}
+
+\subsection{Interaction entre les machines et déroulement du FAI}
+\begin{itemize}
+  \item Le client démarre et, ne disposant ni de système d’exploitation ni de configuration disque, tente un boot réseau (PXE).
+  \item Le client envoie une requête DHCP sur le réseau. Le serveur PXE lui attribue une adresse IP et lui fournit l’adresse du serveur TFTP.
+  \item Le client contacte alors le serveur TFTP et télécharge le fichier \texttt{pxelinux.0}, ainsi que les fichiers de configuration associés.
+  \item Grâce à ces fichiers, le client est redirigé vers le serveur HTTP pour récupérer une image ISO Ubuntu et les fichiers d’installation automatisée (\texttt{user-data} et \texttt{meta-data}).
+  \item Le système s’installe automatiquement selon le profil choisi. Les fichiers autoinstall définissent notamment :
+  \begin{itemize}
+    \item la configuration du système (partitionnement, langue, utilisateur, etc.) ;
+    \item les paquets à installer automatiquement ;
+    \item les commandes \texttt{late-commands} (comme l’ajout du miroir local APT).
+  \end{itemize}
+  \item L’installation s’effectue via le miroir local APT hébergé sur le serveur, évitant ainsi l’utilisation d’Internet et accélérant les installations.
+\end{itemize}
+
+\subsection{Principaux choix expliqués en détail}
+
+\begin{itemize}
+
+\item \textbf{Mode Bridged versus NAT :} 
+Le mode \textit{bridged} est utilisé afin que les clients obtiennent directement leur adresse IP depuis le serveur DHCP PXE, facilitant ainsi le démarrage réseau sans translation d’adresses (NAT). Le mode NAT, bien que simple à configurer, entraîne souvent des complications dans le transfert de paquets DHCP et TFTP, essentiels au bon déroulement du démarrage PXE.
+
+\item \textbf{Utilisation d’Aptly plutôt que \texttt{dpkg-scanpackages} :} 
+Aptly offre des fonctionnalités avancées essentielles pour la gestion efficace d'un miroir APT local. Contrairement à \texttt{dpkg-scanpackages}, Aptly permet :
+\begin{itemize}
+    \item la gestion simplifiée de plusieurs composants (main, dev, admin, sec) via une publication unique ;
+    \item la création automatisée de snapshots quotidiens, facilitant la gestion d'historique et les rollbacks éventuels ;
+    \item un nettoyage automatique et planifié des anciennes versions des paquets, réduisant ainsi l'espace disque utilisé et optimisant les performances.
+\end{itemize}
+
+\item \textbf{Méthode d'installation hors ligne avec montage local ISO :} 
+Plutôt que de télécharger à chaque installation les fichiers nécessaires depuis Internet, l’ISO complète d'Ubuntu Desktop est téléchargée une fois sur le serveur, montée localement et pris via NFS (Network File System), ce dernier a été utilisé pour éviter de charger le fichier iso dans la RAM, en raison de sa taille.. Cette méthode permet :
+\begin{itemize}
+    \item d'éviter toute dépendance à une connexion Internet durant l'installation ;
+    \item de réduire drastiquement la consommation de bande passante réseau ;
+    \item d'assurer une disponibilité et une rapidité accrues lors des déploiements massifs.
+    \l'utilisation 
+\end{itemize}
+
+\item \textbf{Création de groupes utilisateurs spécifiques :} 
+Afin de renforcer la sécurité et de prévenir les accès non autorisés à des privilèges élevés, chaque profil utilisateur (\texttt{adminsys}, \texttt{devuser}, \texttt{secretary}) est configuré dans des groupes spécifiques limitant strictement leurs droits :
+\begin{itemize}
+    \item L'utilisateur \texttt{adminsys} a un accès complet,étant dans le groupe sudo sans autres restrictions, nous avons choisi de ne pas en faire un utilisateur root complet, car ce n'est pas une bonne pratique , tandis que le \texttt{devuser} a des privilèges sudo, mais limités pour ne pas pouvoir accéder au shell root, enfin l'utilisateur \texttt{secretary} n'a pas de privilèges sudo, les paramètres détaillés pour chaque profil peuvent être vus dans les fichiers autoinstall.yaml .
+    
+    \item Un utilisateur spécifique \texttt{sysadmin} est cependant présent sur chaque poste (notamment Dev et Secrétaire),  pour les besoins ponctuels d'administration, disposant lui d'un accès complet à \texttt{sudo}.Nous avons décidé qu'il devrait être présent avec le compte admin\_lead, y compris pour les postes destinés aux administrateurs système, pour pouvoir assurer le support et la maintenance pour chacun, s'il aura ce rôle.
+    
+\end{itemize}
+
+\item \textbf{Meta-paquets personnalisés avec \texttt{equivs} :} 
+L'utilisation de méta-paquets simplifie considérablement la gestion logicielle pour chaque profil (dev, adminsys, secrétaire). Chaque méta-paquet (\texttt{dev-profile}, \texttt{admin-profile}, \texttt{sec-profile}) permet :
+\begin{itemize}
+    \item une gestion unifiée des dépendances logicielles pour chaque type de poste ;
+    \item une simplification des mises à jour logicielles ultérieures : il suffit d'ajuster le méta-paquet et de republier sur Aptly pour mettre à jour automatiquement tous les clients concernés. Un script a été créé à cet effet.
+\end{itemize}
+
+\item \textbf{Ansible :} 
+Il est également possible d'utiliser ansible pour installer rapidement et instantanément certains paquets pour un groupe d'utilisateurs spécifique, comme dev par exemple. Lors de l'installation, l'adresse IP de chaque machine est enregistrée sur le serveur, dans un fichier correspondant au type d'utilisateur. Finalement, un script a été créé qui prend ces adresses, utilise un playbook, se connecte  aux clients via ssh, et a pour fonction d'installer un package ou d'effectuer une mise à niveau ou une mise à jour.
+
+
+\item \textbf{Utilisation d’Autoinstall plutôt que Preseed ou Ansible :} 
+Le choix d’utiliser la solution moderne \texttt{autoinstall} est motivé par plusieurs avantages majeurs sur les approches traditionnelles telles que Preseed ou Ansible :
+\begin{itemize}
+    \item \texttt{Autoinstall} est nativement supporté et recommandé par Ubuntu depuis la version 20.04, offrant une intégration parfaite et un support à long terme par la communauté Ubuntu.
+    \item Contrairement à Preseed, qui nécessite des configurations complexes et est souvent moins clair, \texttt{autoinstall} utilise un format YAML beaucoup plus lisible et facile à maintenir.
+    \item Alors qu'Ansible requiert une connexion réseau post-installation et des opérations séparées pour la configuration finale, \texttt{autoinstall} inclut la configuration complète dès l’installation initiale, simplifiant ainsi considérablement le processus global et limitant les interventions manuelles ou additionnelles.
+    \item Il convient de noter que l'installation automatique peut être utilisée pour Ubuntu Desktop à partir de la version 24.04 et n'est pas prise en charge pour les versions antérieures. Pour les versions précédentes, Ubuntu Live Server peut être utilisé avec des packages supplémentaires pour créer un environnement de Desktop. Pour une meilleure expérience utilisateur, cette dernière méthode n'est pas la meilleure solution et nécessite une configuration plus étendue pour créer un environnement de Desktop approprié.
+\end{itemize}
+
+\end{itemize}
+
+
+%=====================================================================
+\section{Nom des fichiers de configuration et description de leur contenu}
+%---------------------------------------------------------------------
+
+\begin{description}
+
+\item[\texttt{/etc/dhcp/dhcpd.conf}] :
+Définit les paramètres réseau pour les clients PXE (plage IP, serveur DNS, fichier de démarrage PXE et adresse du serveur TFTP).
+
+\item[\texttt{/etc/default/isc-dhcp-server}]:
+Spécifie l'interface réseau utilisée par le service DHCP.
+
+\item[\texttt{/etc/default/tftpd-hpa}]:
+Configure le serveur TFTP (répertoire racine, adresse et options de sécurité).
+
+\item[\texttt{/srv/tftp/pxelinux.cfg/default}]:
+Fichier définissant le menu de boot PXE, incluant les profils disponibles (Admin, Dev, Sec) et leurs paramètres.
+
+\item[\texttt{/etc/exports}]:
+Configure l’export NFS pour le partage de l’ISO Ubuntu montée en local vers les clients.
+
+\item[\texttt{/var/www/html/profiles/*/autoinstall.yaml}]:
+Fichiers YAML définissant les configurations automatiques (création de comptes utilisateurs, installation de paquets spécifiques, configuration APT, commandes post-installation).
+
+\item[\texttt{/var/www/html/profiles/*/custom-aptly.sources}]:
+Fichiers APT configurant chaque profil pour utiliser le miroir local avec les bons composants (main, dev, admin, sec).
+
+\item[\texttt{/var/www/html/profiles/rc-local.service}]:
+Permet la création d'un service qui sera lancé au premier démarrage pour que l'utilisateur puisse définir son propre mot de passe, ce fichier est créé sur le serveur, et mis sur le système de l'utilisateur via http dans la postinstallation.
+
+\item[\texttt{/var/www/html/profiles/*/rc.local}]:
+Le script correspondant qui oblige l'utilisateur à définir son propre mot de passe.
+
+\item[\texttt{/usr/local/bin/update\_aptly.sh}]:
+Script automatisant la mise à jour quotidienne du miroir Aptly, incluant la création de snapshots, la fusion de profils, la publication, et le nettoyage des anciens snapshots.
+
+\item[\texttt{/etc/apt/apt.conf.d/20auto-upgrades}]:
+Configure les mises à jour automatiques quotidiennes côté client (unattended-upgrades), un fichier qui est configuré directement pendant le processus d'installation sur le système de l'utilisateur.
+
+\end{description}
+
+%=====================================================================
+\section{Commandes utiles}
+%---------------------------------------------------------------------
+
+\subsection{Vérification rapide des services serveur PXE}
+
+\begin{lstlisting}[language=bash]
+sudo systemctl status isc-dhcp-server tftpd-hpa apache2 nfs-server
+\end{lstlisting}
+
+\subsection{Vérification des ports ouverts}
+
+\begin{lstlisting}[language=bash]
+sudo ss -lupnt | grep -E ':67|:69|:80|:2049|:22'
+\end{lstlisting}
+
+\subsection{Contrôle des journaux système}
+
+\begin{lstlisting}[language=bash]
+sudo journalctl -u isc-dhcp-server
+sudo tail -f /var/log/syslog | grep tftp
+sudo tail -f /var/log/apache2/access.log
+\end{lstlisting}
+
+\subsection{Script publication et update du miroir Aptly}
+
+\begin{lstlisting}[language=bash]
+APTLY_HOME=/home/username/.aptly /usr/local/bin/update_aptly.sh
+\end{lstlisting}
+
+\subsection{Dépannage côté client}
+
+\begin{lstlisting}[language=bash]
+sudo systemctl status unattended-upgrades
+sudo unattended-upgrade --dry-run --debug
+\end{lstlisting}
+
+\subsection{Redémarrage rapide des services}
+
+\begin{lstlisting}[language=bash]
+sudo systemctl restart isc-dhcp-server tftpd-hpa apache2 nfs-kernel-server
+\end{lstlisting}
+
+%=====================================================================
+\section{Processus en services sur le server}
+%---------------------------------------------------------------------
+Lors du fonctionnement normal du serveur PXE, les processus suivants doivent être actifs en permanence pour assurer un fonctionnement optimal :
+
+\begin{itemize}
+\item \textbf{dhcpd (isc-dhcp-server)} : service DHCP qui fournit des adresses IP et les paramètres nécessaires pour le démarrage réseau PXE.
+\item \textbf{in.tftpd (tftpd-hpa)} : serveur TFTP responsable du transfert initial des fichiers de boot (\texttt{pxelinux.0}, kernel, initrd).
+\item \textbf{apache2} : serveur HTTP servant les profils \texttt{autoinstall.yaml} et le miroir APT local.
+\item \textbf{rpc.nfsd} : serveur NFS exportant l'ISO Ubuntu Desktop, monté en lecture seule par les clients.
+\item \textbf{cron} : lance quotidiennement le script \texttt{update\_aptly.sh} qui met à jour le miroir APT local et gère les snapshots de paquets.
+\item -
+\end{itemize}
+
+Ces processus doivent être régulièrement surveillés via \texttt{systemctl status} pour prévenir d’éventuels dysfonctionnements.
+
+%=====================================================================
+\section{Service tournant en arrière-plan côté client}
+%---------------------------------------------------------------------
+
+Chaque client déployé exécute automatiquement un service essentiel assurant les mises à jour automatiques depuis le miroir APT local :
+
+\begin{description}
+  \item[\texttt{unattended-upgrades}] permet l'installation silencieuse et quotidienne des mises à jour de sécurité et des paquets via le miroir local.
+\end{description}
+
+\subsection{Fichier de configuration principal}
+\begin{lstlisting}
+/etc/apt/apt.conf.d/20auto-upgrades
+\end{lstlisting}
+
+\subsection{Contenu du fichier}
+\begin{lstlisting}
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+\end{lstlisting}
+
+Ce fichier est créé lors du processus de post-installation directement sur le système client.
+
+\subsection{Commandes utiles pour vérifier le service côté client}
+\begin{lstlisting}[language=bash]
+sudo systemctl status unattended-upgrades
+sudo unattended-upgrade --dry-run --debug
+\end{lstlisting}
+
+Ce service garantit que tous les postes clients restent constamment à jour sans nécessiter d’intervention manuelle régulière.
+
+%=====================================================================
+\section{Ports Réseau Utilisés}
+%---------------------------------------------------------------------
+Les ports réseau suivants doivent être ouverts et accessibles sur le serveur PXE pour assurer son bon fonctionnement :
+
+\begin{itemize}
+\item \textbf{67/UDP :} Service DHCP utilisé pour l'attribution automatique d’adresses IP aux clients PXE.
+\item \textbf{69/UDP :} TFTP, utilisé pour la récupération initiale des fichiers de boot.
+\item \textbf{80/TCP :} Apache2, nécessaire à la distribution des fichiers de configuration \texttt{autoinstall.yaml} et du miroir APT local.
+\item \textbf{2049/TCP :} NFS, utilisé par les clients pour monter l'ISO Ubuntu Desktop en lecture seule.
+\item \textbf{22/TCP :} SSH, utilisé pour l’administration distante du serveur PXE et la gestion des dépôts Aptly.
+\end{itemize}
+
+%=====================================================================
+\section{Scripts de démarrage}
+%---------------------------------------------------------------------
+Tous les services critiques (DHCP, TFTP, Apache, NFS) sont configurés pour démarrer automatiquement au lancement du serveur via \texttt{systemd}. Exemple de vérification rapide des services :
+
+\begin{lstlisting}[language=bash]
+sudo systemctl enable isc-dhcp-server tftpd-hpa apache2 nfs-server
+sudo systemctl start isc-dhcp-server tftpd-hpa apache2 nfs-server
+sudo systemctl status isc-dhcp-server tftpd-hpa apache2 nfs-server
+\end{lstlisting}
+
+%=====================================================================
+\section{Liste détaillée des étapes d’implémentation}
+%---------------------------------------------------------------------
+
+\subsection{Installation initiale des paquets sur le serveur PXE}
+
+\begin{lstlisting}[language=bash]
+sudo apt update
+sudo apt install -y isc-dhcp-server tftpd-hpa apache2 wget curl dpkg-dev xorriso openssh-server nfs-kernel-server aptly gnupg2 pxelinux syslinux-common equivs ansible php libapache2-mod-php'
+\end{lstlisting}
+
+\subsection{Configuration du serveur DHCP}
+
+Exécutez la commande \textbf{ip addr :} pour voir l'adresse du serveur
+
+\textbf{Fichier :} \texttt{/etc/dhcp/dhcpd.conf}
+
+Modifier le fichier suivant avec les paramètres réseau appropriés, le fichier complété sera joint, voici un exemple, doit être modifié en fonction de l'adresse IP du serveur :
+
+\begin{lstlisting}[language=bash]
+# option definitions common to all supported networks...
+option domain-name "example.org";
+option domain-name-servers ns1.example.org, ns2.example.org;
+# Allow booting and bootp (PXE) clients
+allow booting;
+allow bootp;
+
+default-lease-time 600;
+max-lease-time 7200;
+authoritative;
+
+subnet 192.168.0.0 netmask 255.255.255.0 {
+  range 192.168.0.100 192.168.0.200;
+  option routers 192.168.0.1;
+  option domain-name-servers 8.8.8.8;
+  filename "pxelinux.0";
+  next-server 192.168.0.58;
+}
+ddns-update-style none;
+
+\end{lstlisting}
+Interface DHCP : \texttt{/etc/default/isc-dhcp-server}
+\begin{lstlisting}
+sudo nano /etc/default/isc-dhcp-server
+INTERFACESv4="enp0s8"
+\end{lstlisting}
+
+
+\subsection{Configuration du serveur TFTP}
+
+Modifier le fichier suivant et créer les répertoires :
+
+\textbf{Fichier :} \texttt{/etc/default/tftpd-hpa}
+\begin{lstlisting}
+TFTP_USERNAME="tftp"
+TFTP_DIRECTORY="/srv/tftp"
+TFTP_ADDRESS="0.0.0.0:69"
+TFTP_OPTIONS="--secure"
+\end{lstlisting}
+
+\begin{lstlisting}[language=bash]
+sudo mkdir -p /srv/tftp
+sudo chmod -R 777 /srv/tftp
+sudo systemctl restart tftpd-hpa
+\end{lstlisting}
+
+\subsection{Préparation et montage local de l'ISO Ubuntu Desktop}
+
+\begin{lstlisting}[language=bash]
+sudo mkdir -p /srv/iso /mnt/ubuntu
+cd /srv/iso
+sudo wget https://releases.ubuntu.com/plucky/ubuntu-25.04-desktop-amd64.iso -O ubuntu-desktop.iso
+sudo mount -o loop ubuntu-desktop.iso /mnt/ubuntu 
+
+sudo mkdir -p /srv/tftp/ubuntu/casper
+sudo cp /mnt/ubuntu/casper/{vmlinuz,initrd} /srv/tftp/ubuntu/casper/
+\end{lstlisting}
+Il faut refaire le mount à chaque redémarrage du serveur.
+
+\subsection{Configuration du menu PXE et export NFS}
+\begin{lstlisting}
+sudo cp /usr/lib/PXELINUX/pxelinux.0 /srv/tftp/
+sudo cp /usr/lib/syslinux/modules/bios/* /srv/tftp/
+sudo mkdir -p /srv/tftp/pxelinux.cfg    
+\end{lstlisting}
+Créer et modifier les fichiers suivants :
+
+- \texttt{/srv/tftp/pxelinux.cfg/default - entièrement disponible dans l'archive de fichiers}
+
+- \texttt{/etc/exports}
+
+Puis activer l’export NFS :
+
+\begin{lstlisting}[language=bash]
+# dans le fichier /etc/exports
+/mnt/ubuntu *(ro,sync,no_subtree_check,no_root_squash)
+#
+sudo exportfs -a
+sudo systemctl restart nfs-kernel-server
+\end{lstlisting}
+
+\subsection{Clé ssh}
+Pour que l'administrateur système puisse se connecter aux machines des utilisateurs, il est nécessaire de configurer une clé ssh, il convient de mentionner que tous les utilisateurs auront openssh-server installé, et la clé publique appartiendra au compte adminsys sur chaque machine.
+
+\newline
+Exécutez la commande suivante pour générer une nouvelle paire de clés SSH:
+\begin{lstlisting}[language=bash]
+ssh-keygen -t rsa -b 4096 -C "your_email@example.com"
+\end{lstlisting}
+Appuyez sur Enter pour accepter l'emplacement par défaut (~/.ssh/id\_rsa)
+:
+Vous serez invité à saisir une phrase secrète pour sécuriser la clé privée. Laissez vide (en appuyant sur Enter).
+\begin{lstlisting}[language=bash]
+cat ~/.ssh/id_rsa.pub
+\end{lstlisting}
+Copiez tout le contenu du fichier, c'est la clé, et placez-le dans le fichier autoinstall.yaml pour chaque profil.
+\begin{lstlisting}[language=bash]
+ssh -i ~/.ssh/id_rsa adminsys@client_machine_ip
+\end{lstlisting}
+Il s'agit de la commande permettant de se connecter à la machine cliente en tant qu'utilisateur adminsys.
+
+\section{Instalation automatique des paquets avec ansible, aussi upgrade et update.}
+\subsection{IP}
+Il faut creer un script PHP qui reprendre l'addrese IP depuis la machine client, qui va faire un curl via HTTP sur ce fichier dans la post-instalation. Le script prend l'adresse IP et l'insère dans les fichiers correspondant au type d'utilisateurs
+Repeter ces commands pour tous les profiles
+\begin{lstlisting}[language=bash]
+sudo touch /var/log/dev.txt     #admin.txt #sec.txt
+sudo chown www-data:www-data /var/log/dev.txt
+sudo chmod 664 /var/log/dev.txt
+\end{lstlisting}
+
+\textbf{Fichier :} \texttt{/var/www/html/report.php}
+\begin{lstlisting}[language=bash]
+<?php
+$client_ip = $_SERVER['REMOTE_ADDR'] ?? 'unknown';
+$hostname = $_GET['hostname'] ?? 'unknown';
+$line = $hostname . ' ' . $client_ip . "\n";
+file_put_contents('/var/log/' . $hostname . '.txt', $line, FILE_APPEND | LOCK_EX);
+header('Content-Type: text/plain');
+echo "OK\n";
+?>
+\end{lstlisting}
+
+\subsection{Configuration ansible.}
+
+\textbf{Fichier :} \texttt{~/install\_package.yml}
+\newline
+Configurer un playbook, avec les fonctions nécessaires pour installer un package, une mise à jour ou une mise à niveau.
+\newline
+\textbf{Fichier :} \texttt{~/install\_package.sh}
+\begin{lstlisting}[language=bash]
+chmod +x install_package.sh
+\end{lstlisting}
+\newline
+Le script qui est appelé lors de la commande curl par le client, prend l'adresse IP et l'enregistre dans le fichier correspondant au profil.
+Les fichiers sont disponibles dans l'archive.
+\subsection{Création des profils \textit{autoinstall}}
+
+Créer les répertoires et fichiers YAML :
+
+\begin{lstlisting}[language=bash]
+sudo mkdir -p /var/www/html/profiles/{admin,dev,sec}
+sudo nano /var/www/html/profiles/{admin,dev,sec}/autoinstall.yaml
+\end{lstlisting}
+\section{configuration pour que l'utilisateur pouvoir mettre son password au premiere boot}
+\begin{lstlisting}
+sudo nano /var/www/html/profiles/dev/rc.local    la meme pour les autres profils .
+ 
+#à mettre dedans , adminsys pour le profil admin, sec pour le profil secretaire.
+
+#!/bin/bash
+usermod -p '' devuser
+passwd --expire devuser
+rm -f /etc/rc.local
+exit 0
+#EOF
+
+sudo nano /var/www/html/profiles/rc-local.service
+
+#à mettre dedans
+
+Description=/etc/rc.local Compatibility
+ConditionPathExists=/etc/rc.local
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=/etc/rc.local start
+TimeoutSec=0
+RemainAfterExit=yes
+GuessMainPID=no
+
+[Install]
+WantedBy=multi-user.target
+#EOF
+\end{lstlisting}
+
+\subsection{Automatisation des mises à jour Aptly}
+
+Créer le script et configurer cron :
+
+\textbf{Script :} \texttt{/usr/local/bin/update\_aptly.sh}
+
+Planification cron quotidienne (2h du matin) :
+
+\begin{lstlisting}[language=bash]
+0 2 * * * APTLY_HOME=/home/username/.aptly /usr/local/bin/update_aptly.sh >> /var/log/aptly-update.log 2>&1
+\end{lstlisting}
+
+\subsection{Création du miroir APT local minimal}
+Création de la clé pour permettre la connexion du miroir à internet:
+\begin{lstlisting}
+gpg --no-default-keyring --keyring trustedkeys.gpg --keyserver keyserver.ubuntu.com --recv-keys 871920D1991BC93C
+\end{lstlisting}
+
+Création du fichier txt contenant la liste de tous les paquets qu'il faut à la création du miroir:
+\begin{lstlisting}
+sudo nano packages.txt
+\end{lstlisting}
+
+Création initiale du miroir avec Aptly :
+
+\begin{lstlisting}[language=bash]
+FILTER=$(paste -sd'|' packages.txt)
+
+aptly mirror create -architectures=amd64   -filter=$FILTER -filter-with-deps plucky http://archive.ubuntu.com/ubuntu plucky
+aptly repo create dev-extra
+aptly repo create admin-extra
+aptly repo create sec-extra
+aptly mirror update plucky
+\end{lstlisting}
+
+Création de la clé pour publish:
+\begin{lstlisting}
+gpg --full-generate-key
+ 
+-Choose the key type: RSA and RSA (option 1).
+
+-Set the key size: 2048 or 4096 bits (2048 is fine for most use cases).
+
+-Set the key expiration: choose a suitable expiration date.
+
+-Enter your name and email address when prompted.
+
+-You may be asked to provide a passphrase (make sure to remember this).
+\end{lstlisting}
+
+\subsection{Création de méta-paquets par profil}
+
+Utiliser \texttt{equivs} pour créer des méta-paquets :
+
+\begin{lstlisting}[language=bash]
+equivs-build dev-profile-control
+aptly repo add dev-extra ./dev-profile_1.0.1_all.deb
+
+equivs-build admin-profile-control
+aptly repo add admin-extra ./admin-profile_1.0.1_all.deb
+
+equivs-build sec-profile-control
+aptly repo add sec-extra ./sec-profile_1.0.1_all.deb
+\end{lstlisting}
+
+Mise à jour du miroir et publication après l'ajout des méta-paquets :
+
+\begin{lstlisting}[language=bash]
+/usr/local/bin/update_aptly.sh
+\end{lstlisting}
+
+\subsection{Fichier \texttt{.sources}}
+Fichier à créer:
+\begin{lstlisting}
+sudo nano /var/www/html/profiles/{dev,sec,admin}/custom-aptly.sources
+
+#à mettre dedans
+
+Types: deb
+URIs: http://192.168.0.58/ubuntu
+Suites: plucky
+Components: main common dev          # ← change  « dev » par « admin » ou « sec » selon le profil
+Signed-By: /etc/apt/trusted.gpg.d/aptly.gpg
+Trusted: yes
+\end{lstlisting}
+
+\subsection{Redémarrage des services après configuration}
+
+Redémarrer tous les services impliqués :
+
+\begin{lstlisting}[language=bash]
+sudo systemctl restart isc-dhcp-server tftpd-hpa apache2 nfs-kernel-server
+\end{lstlisting}
+
+Après ces étapes, l’infrastructure PXE automatisée est prête à fonctionner et à déployer automatiquement les postes de travail souhaités.
+
+%=====================================================================
+\section{Maintenance et Procédures de Changement}
+%---------------------------------------------------------------------
+\subsection{Ajout de nouveaux paquets avec l'aide du miroir}
+Pour ajouter des paquets spécifiques à un profil particulier :
+
+\begin{enumerate}
+\item Copier le paquet \texttt{.deb} sur le serveur :
+\begin{lstlisting}[language=bash]
+aptly repo add nom\_repo /chemin/vers/paquet.deb
+\end{lstlisting}
+ou, si le paquet est déjà présent sur le miroir créer, mettez à jour le meta-paquet correspondant en augmentant la version et en ajoutant à dépends le paquet voulu.
+\item Exécuter le script de mise à jour Aptly :
+\begin{lstlisting}[language=bash]
+/usr/local/bin/update_aptly.sh
+\end{lstlisting}
+\item Les clients récupèrent automatiquement les paquets via \texttt{unattended-upgrades} ou à l'aide d'ansible qui se connecte à ssh, comme on a les ip des clients sur le server trié par type de client, nous pouvons forcer la mise à jour manuellement avant l'automatique.
+\end{enumerate}
+
+\subsection{Update, upgrade, ajout de nouveaux paquets avec l'aide d'ansible}
+faire directement via ansible comme expliqué juste avant mais il faut juste effectuer au choix l'une des commandes suivantes selon ce que vous voulez faire.
+\begin{lstlisting}
+Mode d'utilisation: remplacer "dev" par "admin" ou "sec".
+
+./install_package.sh upgrade dev
+./install_package.sh update dev
+./install_package.sh nodejs dev
+\end{lstlisting}
+
+\subsection{Changer de version Ubuntu}
+\begin{enumerate}
+\item Télécharger la nouvelle ISO dans \texttt{/srv/iso}.
+\item Monter l’ISO et copier les fichiers nécessaires vers le répertoire TFTP :
+\begin{lstlisting}[language=bash]
+sudo mount -o loop nouvelle.iso /mnt/ubuntu
+sudo cp /mnt/ubuntu/casper/{vmlinuz,initrd} /srv/tftp/ubuntu/casper/
+\end{lstlisting}
+\item Mettre à jour le script Aptly pour cibler la nouvelle version.
+\item Relancer le script Aptly et redémarrer les services :
+\begin{lstlisting}[language=bash]
+/usr/local/bin/update_aptly.sh
+sudo systemctl restart isc-dhcp-server tftpd-hpa apache2 nfs-server
+\end{lstlisting}
+\end{enumerate}
+
+%=====================================================================
+\section{Opérations de dépannage rapide}
+%---------------------------------------------------------------------
+\begin{lstlisting}[language=bash]
+
+Verifier la configuration DHCP
+
+sudo journalctl -u isc-dhcp-server
+
+Verifier les transferts TFTP
+
+sudo tail -f /var/log/syslog | grep tftp
+
+Consulter les acces Apache
+
+sudo tail -f /var/log/apache2/access.log
+
+Verifier la publication Aptly
+
+aptly publish list
+\end{lstlisting}
+%=====================================================================
+\section{Annexe : Liste des fichiers créés ou modifiés sur le serveur}
+%---------------------------------------------------------------------
+\begin{itemize}
+\item \texttt{/etc/dhcp/dhcpd.conf}
+\item \texttt{/etc/default/isc-dhcp-server}
+\item \texttt{/etc/default/tftpd-hpa}
+\item \texttt{/srv/tftp/pxelinux.cfg/default}
+\item \texttt{/var/www/html/profiles/admin/autoinstall.yaml}
+\item \texttt{/var/www/html/profiles/dev/autoinstall.yaml}
+\item \texttt{/var/www/html/profiles/sec/autoinstall.yaml}
+\item \texttt{/var/www/html/profiles/*/custom-aptly.sources}
+\item \texttt{/usr/local/bin/update\_aptly.sh}
+\item \texttt{/etc/cron.d/update\_aptly}
+\item Paquets méta créés via \texttt{equivs} : \texttt{dev-profile\_1.0.1\_all.deb}, \texttt{sec-profile\_1.0.1\_all.deb}, \texttt{admin-profile\_1.0.1\_all.deb}
+\end{itemize}
+\end{document}
