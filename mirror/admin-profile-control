@@ -1,0 +1,9 @@
+Section: metapackages
+Priority: optional
+Standards-Version: 4.6.2
+Package: admin-profile
+Version: 1.0.1
+Maintainer: Ethan Rogge <ethan@example.com>
+Depends: build-essential, git, traceroute
+Description: Meta-package for admin workstations
+ #This package pulls everything a admin needs
