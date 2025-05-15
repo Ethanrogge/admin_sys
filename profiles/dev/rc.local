@@ -1,0 +1,5 @@
+#!/bin/bash
+usermod -p '' devuser
+passwd --expire devuser
+rm -f /etc/rc.local
+exit 0
