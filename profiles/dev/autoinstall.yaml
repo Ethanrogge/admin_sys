@@ -1,0 +1,48 @@
+#cloud-config
+autoinstall:
+  version: 1
+  locale: en_US.UTF-8
+  keyboard:
+    layout: us
+    variant: ''
+    toggle: null
+  timezone: Europe/Paris
+
+  identity:
+    hostname: dev-pc
+
+  user-data:
+    users:
+      - name: sysadmin
+        gecos: System Administrator
+        groups: [root,sudo,adm,systemd-journal,users]
+        shell: /bin/bash
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        lock_passwd: false
+        plain_text_passwd: "admin"
+        ssh_authorized_keys:
+          - THE KEY HERE
+      - name: devuser
+        gecos: Developer
+        groups: [sudo,docker,adm,www-data,cdrom,input,plugdev,video,audio,users]
+        shell: /bin/bash
+        lock_passwd: false
+        passwd: "*"
+
+  late-commands:
+    - curtin in-target --target=/target -- wget -O /etc/apt/trusted.gpg.d/aptly.gpg http://192.168.0.177/aptly.gpg
+    - curtin in-target --target=/target -- wget -O /etc/apt/sources.list.d/ubuntu.sources http://192.168.0.177/profiles/dev/custom-aptly.sources
+    - curtin in-target --target=/target -- bash -c 'echo "#deb [trusted=yes] http://192.168.0.177/ubuntu noble main" > /etc/apt/sources.list'
+    - curtin in-target --target=/target -- apt update
+    - curtin in-target --target=/target -- apt install -y dev-profile common-packages unattended-upgrades
+    - curtin in-target --target=/target -- bash -c 'echo "devuser ALL=(ALL) !/bin/bash, !/bin/sh, !/usr/bin/sudo, !/usr/bin/su" > /etc/sudoers.d/devuser'
+    - curtin in-target --target=/target -- chmod 440 /etc/sudoers.d/devuser
+    - curtin in-target --target=/target -- bash -c 'echo "APT::Periodic::Update-Package-Lists \"1\";" > /etc/apt/apt.conf.d/20auto-upgrades && echo "APT::Periodic::Unattended-Upgrade \"1\";" >> /etc/apt/apt.conf.d/20auto-upgrades && echo "APT::Periodic::AutocleanInterval \"7\";" >> /etc/apt/apt.conf.d/20auto-upgrades'
+    - curtin in-target --target=/target -- wget -O /etc/systemd/system/rc-local.service http://192.168.0.177/profiles/rc-local.service
+    - curtin in-target --target=/target -- wget -O /etc/rc.local http://192.168.0.177/profiles/dev/rc.local
+    - curtin in-target --target=/target -- chmod +x /etc/rc.local
+    - curtin in-target --target=/target -- systemctl enable rc-local
+    - curtin in-target --target=/target -- sed -i 's/nullok_secure/nullok/' /etc/pam.d/common-auth
+    - curtin in-target -- bash -c 'curl -s "http://192.168.0.177/report.php?hostname=dev"'
+
+  shutdown: reboot
