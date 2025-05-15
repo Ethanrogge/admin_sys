@@ -32,7 +32,7 @@ autoinstall:
 
   late-commands:
     - curtin in-target --target=/target -- wget -O /etc/apt/trusted.gpg.d/aptly.gpg http://192.168.0.177/aptly.gpg
-    - curtin in-target --target=/target -- wget -O /etc/apt/sources.list.d/ubuntu.sources http://192.168.0.177/profiles/dev/custom-aptly.sources
+    - curtin in-target --target=/target -- wget -O /etc/apt/sources.list.d/ubuntu.sources http://192.168.0.177/profiles/admin/custom-aptly.sources
     - curtin in-target --target=/target -- bash -c 'echo "#deb [trusted=yes] http://192.168.0.177/ubuntu noble main" > /etc/apt/sources.list'
     - curtin in-target --target=/target -- apt update
     - curtin in-target --target=/target -- apt install -y admin-profile common-packages unattended-upgrades
