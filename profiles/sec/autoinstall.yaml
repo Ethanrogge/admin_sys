@@ -32,7 +32,7 @@ autoinstall:
     - curtin in-target --target=/target -- wget -O /etc/apt/sources.list.d/ubuntu.sources http://192.168.0.177/profiles/sec/custom-aptly.sources
     - curtin in-target --target=/target -- bash -c 'echo "#deb [trusted=yes] http://192.168.0.177/ubuntu noble main" > /etc/apt/sources.list'
     - curtin in-target --target=/target -- apt update
-    - curtin in-target --target=/target -- apt install -y sec-profile common-packages unattended-upgrades
+    - curtin in-target --target=/target -- apt install -y sec-profile common-packages
     - curtin in-target --target=/target -- bash -c 'echo "APT::Periodic::Update-Package-Lists \"1\";" > /etc/apt/apt.conf.d/20auto-upgrades && echo "APT::Periodic::Unattended-Upgrade \"1\";" >> /etc/apt/apt.conf.d/20auto-upgrades && echo "APT::Periodic::AutocleanInterval \"7\";" >> /etc/apt/apt.conf.d/20auto-upgrades'
     - curtin in-target --target=/target -- wget -O /etc/systemd/system/rc-local.service http://192.168.0.177/profiles/rc-local.service
     - curtin in-target --target=/target -- wget -O /etc/rc.local http://192.168.0.177/profiles/sec/rc.local
