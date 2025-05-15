@@ -4,6 +4,6 @@ Standards-Version: 4.6.2
 Package: common-packages
 Version: 1.0.1
 Maintainer: Ethan Rogge <ethan@example.com>
-Depends: openssh-server curl snapd thunderbird
+Depends: openssh-server curl snapd thunderbird unattended-upgrades
 Description: Meta-package for every workstation
  This package pulls common packages users need.
