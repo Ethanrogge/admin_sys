@@ -592,7 +592,9 @@ ou, si le paquet est déjà présent sur le miroir créer, mettez à jour le met
 \begin{lstlisting}[language=bash]
 /usr/local/bin/update_aptly.sh
 \end{lstlisting}
-\item Les clients récupèrent automatiquement les paquets via \texttt{unattended-upgrades} ou à l'aide d'ansible qui se connecte à ssh, comme on a les ip des clients sur le server trié par type de client, nous pouvons forcer la mise à jour manuellement avant l'automatique.
+\item Les clients récupèrent automatiquement les paquets via \texttt{unattended-upgrades} ou à l'aide d'ansible qui se connecte à ssh, comme on a les ip des clients sur le server trié par type de client, nous pouvons forcer la mise à jour manuellement, avant l'automatique, 
+
+\item En même temps, avec l'aide d'ansible, il est possible d'installer directement un paquet pour les utilisateurs dev, secretary ou adminsys,sans utiliser aptlty, à condition que ce paquet soit dans le miroir local.
 \end{enumerate}
 
 \subsection{Update, upgrade, ajout de nouveaux paquets avec l'aide d'ansible}
