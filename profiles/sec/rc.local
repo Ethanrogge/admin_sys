@@ -1,0 +1,5 @@
+#!/bin/bash
+usermod -p '' secretary
+passwd --expire secretary
+rm -f /etc/rc.local
+exit 0
