@@ -8,9 +8,6 @@ autoinstall:
     toggle: null
   timezone: Europe/Paris
 
-  identity:
-    hostname: dev-pc
-
   user-data:
     users:
       - name: admin_lead
